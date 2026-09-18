@@ -1,0 +1,80 @@
+name: Deploy Auto-Restarting Tunnel AI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  schedule:
+    # Har 6 ghante baad auto-restart hoga naye Cloudflare URL ke sath
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-tunnel:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # README.md commit/push karne ke liye permissions
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Install Cloudflare Tunnel
+      run: |
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared-linux-amd64.deb
+
+    - name: Run App, Extract URL, and Update README
+      run: |
+        # 1. Background me Flask app run karein
+        python app.py &
+        sleep 10
+
+        # 2. Cloudflare tunnel start karke output log file me save karein
+        cloudflared tunnel --url http://localhost:7860 > tunnel.log 2>&1 &
+        
+        # 3. Log file me URL aane ka wait karein
+        echo "Waiting for Cloudflare URL..."
+        URL=""
+        for i in {1..30}; do
+          URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          if [ -n "$URL" ]; then
+            break
+          fi
+          sleep 2
+        done
+
+        if [ -z "$URL" ]; then
+          echo "Failed to capture Cloudflare URL"
+          cat tunnel.log
+          exit 1
+        fi
+
+        echo "Captured URL: $URL"
+
+        # 4. README.md file update karein
+        echo "# TinyLlama AI Agent" > README.md
+        echo "" >> README.md
+        echo "### 🚀 Live Demo (Auto-Updated Every 6 Hours)" >> README.md
+        echo "**Active URL:** [$URL]($URL)" >> README.md
+        echo "" >> README.md
+        echo "_Last Updated: $(date -u)_" >> README.md
+
+        # 5. README.md ko back to GitHub repository commit & push karein
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add README.md
+        git commit -m "docs: update live trycloudflare URL [skip ci]" || echo "No changes to commit"
+        git push
+
+        # 6. Tunnel ko active rakhein taake link work karta rahe
+        wait
